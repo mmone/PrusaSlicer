@@ -765,6 +765,23 @@ PageUpdate::PageUpdate(ConfigWizard *parent)
     box_presets->Bind(wxEVT_CHECKBOX, [this](wxCommandEvent &event) { this->preset_update = event.IsChecked(); });
 }
 
+#if ENABLE_CONFIGURABLE_PATHS_EXPORT_TO_3MF_AND_AMF
+PageReloadFromDisk::PageReloadFromDisk(ConfigWizard* parent)
+    : ConfigWizardPage(parent, _(L("Reload from disk")), _(L("Reload from disk")))
+    , full_pathnames(true)
+{
+    auto* box_pathnames = new wxCheckBox(this, wxID_ANY, _(L("Export full pathnames of models and parts sources into 3mf and amf files")));
+    box_pathnames->SetValue(wxGetApp().app_config->get("export_sources_full_pathnames") == "1");
+    append(box_pathnames);
+    append_text(_(L(
+        "If enabled, allows the Reload from disk command to automatically find and load the files when invoked.\n"
+        "If not enabled, the Reload from disk command will ask to select each file using an open file dialog."
+    )));
+
+    box_pathnames->Bind(wxEVT_CHECKBOX, [this](wxCommandEvent& event) { this->full_pathnames = event.IsChecked(); });
+}
+#endif // ENABLE_CONFIGURABLE_PATHS_EXPORT_TO_3MF_AND_AMF
+
 PageMode::PageMode(ConfigWizard *parent)
     : ConfigWizardPage(parent, _(L("View mode")), _(L("View mode")))
 {
@@ -1356,6 +1373,9 @@ void ConfigWizard::priv::load_pages()
     btn_finish->Enable(any_fff_selected || any_sla_selected);
 
     index->add_page(page_update);
+#if ENABLE_CONFIGURABLE_PATHS_EXPORT_TO_3MF_AND_AMF
+    index->add_page(page_reload_from_disk);
+#endif // ENABLE_CONFIGURABLE_PATHS_EXPORT_TO_3MF_AND_AMF
     index->add_page(page_mode);
 
     index->go_to(former_active);   // Will restore the active item/page if possible
@@ -1605,7 +1625,27 @@ void ConfigWizard::priv::on_3rdparty_install(const VendorProfile *vendor, bool i
     load_pages();
 }
 
-bool ConfigWizard::priv::check_material_config(Technology technology)
+bool ConfigWizard::priv::on_bnt_finish()
+{
+    /* When Filaments or Sla Materials pages are activated, 
+     * materials for this pages are automaticaly updated and presets are reloaded.
+     * 
+     * But, if _Finish_ button was clicked without activation of those pages 
+     * (for example, just some printers were added/deleted), 
+     * than last changes wouldn't be updated for filaments/materials.
+     * SO, do that before close of Wizard
+     */
+    update_materials(T_ANY);
+    if (any_fff_selected)
+        page_filaments->reload_presets();
+    if (any_sla_selected)
+        page_sla_materials->reload_presets();
+
+    // check, that there is selected at least one filament/material
+    return check_materials_in_config(T_ANY);
+}
+
+bool ConfigWizard::priv::check_materials_in_config(Technology technology)
 {
     const auto exist_preset = [this](const std::string& section, const Materials& materials)
     {
@@ -1710,6 +1750,11 @@ void ConfigWizard::priv::apply_config(AppConfig *app_config, PresetBundle *prese
     }
     app_config->set("version_check", page_update->version_check ? "1" : "0");
     app_config->set("preset_update", page_update->preset_update ? "1" : "0");
+
+#if ENABLE_CONFIGURABLE_PATHS_EXPORT_TO_3MF_AND_AMF
+    app_config->set("export_sources_full_pathnames", page_reload_from_disk->full_pathnames ? "1" : "0");
+#endif // ENABLE_CONFIGURABLE_PATHS_EXPORT_TO_3MF_AND_AMF
+
     page_mode->serialize_mode(app_config);
 
     std::string preferred_model;
@@ -1865,6 +1910,9 @@ ConfigWizard::ConfigWizard(wxWindow *parent)
 
     p->add_page(p->page_custom   = new PageCustom(this));
     p->add_page(p->page_update   = new PageUpdate(this));
+#if ENABLE_CONFIGURABLE_PATHS_EXPORT_TO_3MF_AND_AMF
+    p->add_page(p->page_reload_from_disk = new PageReloadFromDisk(this));
+#endif // ENABLE_CONFIGURABLE_PATHS_EXPORT_TO_3MF_AND_AMF
     p->add_page(p->page_mode     = new PageMode(this));
     p->add_page(p->page_firmware = new PageFirmware(this));
     p->add_page(p->page_bed      = new PageBedShape(this));
@@ -1899,16 +1947,15 @@ ConfigWizard::ConfigWizard(wxWindow *parent)
         // check, that there is selected at least one filament/material
         ConfigWizardPage* active_page = this->p->index->active_page();
         if ( (active_page == p->page_filaments || active_page == p->page_sla_materials)
-            && !p->check_material_config(dynamic_cast<PageMaterials*>(active_page)->materials->technology))
+            && !p->check_materials_in_config(dynamic_cast<PageMaterials*>(active_page)->materials->technology))
             return;
         this->p->index->go_next();
     });
 
     p->btn_finish->Bind(wxEVT_BUTTON, [this](const wxCommandEvent &)
     {
-        if (!p->check_material_config(T_ANY))
-            return;
-        this->EndModal(wxID_OK);
+        if (p->on_bnt_finish())
+            this->EndModal(wxID_OK);
     });
 
     p->btn_sel_all->Bind(wxEVT_BUTTON, [this](const wxCommandEvent &) {

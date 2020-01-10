@@ -61,6 +61,11 @@ void AppConfig::set_defaults()
     if (get("preset_update").empty())
         set("preset_update", "1");
 
+#if ENABLE_CONFIGURABLE_PATHS_EXPORT_TO_3MF_AND_AMF
+    if (get("export_sources_full_pathnames").empty())
+        set("export_sources_full_pathnames", "1");
+#endif // ENABLE_CONFIGURABLE_PATHS_EXPORT_TO_3MF_AND_AMF
+
     // remove old 'use_legacy_opengl' parameter from this config, if present
     if (!get("use_legacy_opengl").empty())
         erase("", "use_legacy_opengl");
@@ -271,7 +276,11 @@ void AppConfig::set_recent_projects(const std::vector<std::string>& recent_proje
     }
 }
 
+#if ENABLE_3DCONNEXION_Y_AS_ZOOM
+void AppConfig::set_mouse_device(const std::string& name, double translation_speed, double translation_deadzone, float rotation_speed, float rotation_deadzone, double zoom_speed)
+#else
 void AppConfig::set_mouse_device(const std::string& name, double translation_speed, double translation_deadzone, float rotation_speed, float rotation_deadzone)
+#endif // ENABLE_3DCONNEXION_Y_AS_ZOOM
 {
     std::string key = std::string("mouse_device:") + name;
     auto it = m_storage.find(key);
@@ -283,6 +292,9 @@ void AppConfig::set_mouse_device(const std::string& name, double translation_spe
     it->second["translation_deadzone"] = std::to_string(translation_deadzone);
     it->second["rotation_speed"] = std::to_string(rotation_speed);
     it->second["rotation_deadzone"] = std::to_string(rotation_deadzone);
+#if ENABLE_3DCONNEXION_Y_AS_ZOOM
+    it->second["zoom_speed"] = std::to_string(zoom_speed);
+#endif // ENABLE_3DCONNEXION_Y_AS_ZOOM
 }
 
 bool AppConfig::get_mouse_device_translation_speed(const std::string& name, double& speed)
@@ -344,6 +356,23 @@ bool AppConfig::get_mouse_device_rotation_deadzone(const std::string& name, floa
     deadzone = (float)::atof(it_val->second.c_str());
     return true;
 }
+
+#if ENABLE_3DCONNEXION_Y_AS_ZOOM
+bool AppConfig::get_mouse_device_zoom_speed(const std::string& name, double& speed)
+{
+    std::string key = std::string("mouse_device:") + name;
+    auto it = m_storage.find(key);
+    if (it == m_storage.end())
+        return false;
+
+    auto it_val = it->second.find("zoom_speed");
+    if (it_val == it->second.end())
+        return false;
+
+    speed = (float)::atof(it_val->second.c_str());
+    return true;
+}
+#endif // ENABLE_3DCONNEXION_Y_AS_ZOOM
 
 void AppConfig::update_config_dir(const std::string &dir)
 {

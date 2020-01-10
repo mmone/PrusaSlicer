@@ -5,6 +5,10 @@
 
 #include "../libslic3r.h"
 
+#include <utility>
+
+#include <boost/container/small_vector.hpp>
+
 namespace Slic3r {
 
 class Print;
@@ -23,8 +27,19 @@ public:
         return something_overridden;
     }
 
+    // When allocating extruder overrides of an object's ExtrusionEntity, overrides for maximum 3 copies are allocated in place.
+    typedef boost::container::small_vector<int32_t, 3> ExtruderPerCopy;
+
+    class ExtruderOverrides
+    {
+    public:
+    	ExtruderOverrides(const ExtruderPerCopy *overrides, const int correct_extruder_id) : m_overrides(overrides) {}
+    private:
+    	const ExtruderPerCopy *m_overrides;
+    };
+
     // This is called from GCode::process_layer - see implementation for further comments:
-    const std::vector<int>* get_extruder_overrides(const ExtrusionEntity* entity, int correct_extruder_id, size_t num_of_copies);
+    const ExtruderPerCopy* get_extruder_overrides(const ExtrusionEntity* entity, int correct_extruder_id, size_t num_of_copies);
 
     // This function goes through all infill entities, decides which ones will be used for wiping and
     // marks them by the extruder id. Returns volume that remains to be wiped on the wipe tower:
@@ -33,6 +48,11 @@ public:
     void ensure_perimeters_infills_order(const Print& print);
 
     bool is_overriddable(const ExtrusionEntityCollection& ee, const PrintConfig& print_config, const PrintObject& object, const PrintRegion& region) const;
+    bool is_overriddable_and_mark(const ExtrusionEntityCollection& ee, const PrintConfig& print_config, const PrintObject& object, const PrintRegion& region) {
+    	bool out = this->is_overriddable(ee, print_config, object, region);
+    	this->something_overridable |= out;
+    	return out;
+    }
 
     void set_layer_tools_ptr(const LayerTools* lt) { m_layer_tools = lt; }
 
@@ -45,10 +65,12 @@ private:
 
     // Returns true in case that entity is not printed with its usual extruder for a given copy:
     bool is_entity_overridden(const ExtrusionEntity* entity, size_t copy_id) const {
-        return (entity_map.find(entity) == entity_map.end() ? false : entity_map.at(entity).at(copy_id) != -1);
+        auto it = entity_map.find(entity);
+        return it == entity_map.end() ? false : it->second[copy_id] != -1;
     }
 
-    std::map<const ExtrusionEntity*, std::vector<int>> entity_map;  // to keep track of who prints what
+    std::map<const ExtrusionEntity*, ExtruderPerCopy> entity_map;  // to keep track of who prints what
+    bool something_overridable = false;
     bool something_overridden = false;
     const LayerTools* m_layer_tools;    // so we know which LayerTools object this belongs to
 };
@@ -58,7 +80,7 @@ private:
 class LayerTools
 {
 public:
-    LayerTools(const coordf_t z, const PrintConfig* print_config_ptr = nullptr) :
+    LayerTools(const coordf_t z) :
         print_z(z),
         has_object(false),
         has_support(false),
@@ -72,6 +94,7 @@ public:
     bool operator==(const LayerTools &rhs) const { return print_z == rhs.print_z; }
 
     bool is_extruder_order(unsigned int a, unsigned int b) const;
+    bool has_extruder(unsigned int extruder) const { return std::find(this->extruders.begin(), this->extruders.end(), extruder) != this->extruders.end(); }
 
     coordf_t 					print_z;
     bool 						has_object;
@@ -123,25 +146,9 @@ public:
     // For a multi-material print, the printing extruders are ordered in the order they shall be primed.
     const std::vector<unsigned int>& all_extruders() const { return m_all_printing_extruders; }
 
-    template<class Self> static auto tools_for_layer(Self& self, coordf_t print_z) -> decltype (*self.m_layer_tools.begin())
-    {
-        auto it_layer_tools = std::lower_bound(self.m_layer_tools.begin(), self.m_layer_tools.end(), LayerTools(print_z - EPSILON));
-        assert(it_layer_tools != self.m_layer_tools.end());
-        coordf_t dist_min = std::abs(it_layer_tools->print_z - print_z);
-        for (++ it_layer_tools; it_layer_tools != self.m_layer_tools.end(); ++it_layer_tools) {
-            coordf_t d = std::abs(it_layer_tools->print_z - print_z);
-            if (d >= dist_min)
-                break;
-            dist_min = d;
-        }
-        -- it_layer_tools;
-        assert(dist_min < EPSILON);
-        return *it_layer_tools;
-    }
-
     // Find LayerTools with the closest print_z.
-    LayerTools&			tools_for_layer(coordf_t print_z) { return tools_for_layer(*this, print_z); }
-    const LayerTools&	tools_for_layer(coordf_t print_z) const { return tools_for_layer(*this, print_z); }
+    const LayerTools&	tools_for_layer(coordf_t print_z) const;
+    LayerTools&			tools_for_layer(coordf_t print_z) { return const_cast<LayerTools&>(std::as_const(*this).tools_for_layer(print_z)); }
 
     const LayerTools&   front()       const { return m_layer_tools.front(); }
     const LayerTools&   back()        const { return m_layer_tools.back(); }

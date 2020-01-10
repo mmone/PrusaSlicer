@@ -1192,9 +1192,9 @@ void Sidebar::update_sliced_info_sizer()
             {
                 double material_cost = cfg->option("bottle_cost")->getFloat() / 
                                        cfg->option("bottle_volume")->getFloat();
-                str_total_cost = wxString::Format("%.2f", material_cost*(ps.objects_used_material + ps.support_used_material) / 1000);                
+                str_total_cost = wxString::Format("%.3f", material_cost*(ps.objects_used_material + ps.support_used_material) / 1000);                
             }
-            p->sliced_info->SetTextAndShow(siCost, str_total_cost);
+            p->sliced_info->SetTextAndShow(siCost, str_total_cost, "Cost");
 
             wxString t_est = std::isnan(ps.estimated_print_time) ? "N/A" : get_time_dhms(float(ps.estimated_print_time));
             p->sliced_info->SetTextAndShow(siEstimatedTime, t_est, _(L("Estimated printing time")) + " :");
@@ -1854,6 +1854,8 @@ struct Plater::priv
     bool is_preview_shown() const { return current_panel == preview; }
     bool is_preview_loaded() const { return preview->is_loaded(); }
     bool is_view3D_shown() const { return current_panel == view3D; }
+
+    void set_current_canvas_as_dirty();
 
 #if ENABLE_VIEW_TOOLBAR_BACKGROUND_FIX
     bool init_view_toolbar();
@@ -3472,7 +3474,7 @@ void Plater::priv::set_current_panel(wxPanel* panel)
         // keeps current gcode preview, if any
         preview->reload_print(true);
 
-        preview->set_canvas_as_dirty();
+        preview->set_as_dirty();
         view_toolbar.select_item("Preview");
     }
 
@@ -3985,6 +3987,14 @@ bool Plater::priv::complit_init_part_menu()
     return true;
 }
 
+void Plater::priv::set_current_canvas_as_dirty()
+{
+    if (current_panel == view3D)
+        view3D->set_as_dirty();
+    else if (current_panel == preview)
+        preview->set_as_dirty();
+}
+
 #if ENABLE_VIEW_TOOLBAR_BACKGROUND_FIX
 bool Plater::priv::init_view_toolbar()
 #else
@@ -4098,7 +4108,11 @@ bool Plater::priv::can_reload_from_disk() const
         const GLVolume* v = selection.get_volume(idx);
         int v_idx = v->volume_idx();
         if (v_idx >= 0)
-            selected_volumes.push_back({ v->object_idx(), v_idx });
+        {
+            int o_idx = v->object_idx();
+            if ((0 <= o_idx) && (o_idx < (int)model.objects.size()))
+                selected_volumes.push_back({ o_idx, v_idx });
+        }
     }
     std::sort(selected_volumes.begin(), selected_volumes.end());
     selected_volumes.erase(std::unique(selected_volumes.begin(), selected_volumes.end()), selected_volumes.end());
@@ -4895,7 +4909,12 @@ void Plater::export_amf()
     wxBusyCursor wait;
     bool export_config = true;
     DynamicPrintConfig cfg = wxGetApp().preset_bundle->full_config_secure();
+#if ENABLE_CONFIGURABLE_PATHS_EXPORT_TO_3MF_AND_AMF
+    bool full_pathnames = wxGetApp().app_config->get("export_sources_full_pathnames") == "1";
+    if (Slic3r::store_amf(path_u8.c_str(), &p->model, export_config ? &cfg : nullptr, full_pathnames)) {
+#else
     if (Slic3r::store_amf(path_u8.c_str(), &p->model, export_config ? &cfg : nullptr)) {
+#endif // ENABLE_CONFIGURABLE_PATHS_EXPORT_TO_3MF_AND_AMF
         // Success
         p->statusbar()->set_status_text(wxString::Format(_(L("AMF file exported to %s")), path));
     } else {
@@ -4924,6 +4943,16 @@ void Plater::export_3mf(const boost::filesystem::path& output_path)
     DynamicPrintConfig cfg = wxGetApp().preset_bundle->full_config_secure();
     const std::string path_u8 = into_u8(path);
     wxBusyCursor wait;
+#if ENABLE_CONFIGURABLE_PATHS_EXPORT_TO_3MF_AND_AMF
+    bool full_pathnames = wxGetApp().app_config->get("export_sources_full_pathnames") == "1";
+#if ENABLE_THUMBNAIL_GENERATOR
+    ThumbnailData thumbnail_data;
+    p->generate_thumbnail(thumbnail_data, THUMBNAIL_SIZE_3MF.first, THUMBNAIL_SIZE_3MF.second, false, true, true, true);
+    if (Slic3r::store_3mf(path_u8.c_str(), &p->model, export_config ? &cfg : nullptr, full_pathnames, &thumbnail_data)) {
+#else
+    if (Slic3r::store_3mf(path_u8.c_str(), &p->model, export_config ? &cfg : nullptr, full_pathnames)) {
+#endif // ENABLE_THUMBNAIL_GENERATOR
+#else
 #if ENABLE_THUMBNAIL_GENERATOR
     ThumbnailData thumbnail_data;
     p->generate_thumbnail(thumbnail_data, THUMBNAIL_SIZE_3MF.first, THUMBNAIL_SIZE_3MF.second, false, true, true, true);
@@ -4931,6 +4960,7 @@ void Plater::export_3mf(const boost::filesystem::path& output_path)
 #else
     if (Slic3r::store_3mf(path_u8.c_str(), &p->model, export_config ? &cfg : nullptr)) {
 #endif // ENABLE_THUMBNAIL_GENERATOR
+#endif // ENABLE_CONFIGURABLE_PATHS_EXPORT_TO_3MF_AND_AMF
         // Success
         p->statusbar()->set_status_text(wxString::Format(_(L("3MF file exported to %s")), path));
         p->set_project_filename(path);
@@ -5362,6 +5392,11 @@ GLCanvas3D* Plater::canvas3D()
 BoundingBoxf Plater::bed_shape_bb() const
 {
     return p->bed_shape_bb();
+}
+
+void Plater::set_current_canvas_as_dirty()
+{
+    p->set_current_canvas_as_dirty();
 }
 
 PrinterTechnology Plater::printer_technology() const

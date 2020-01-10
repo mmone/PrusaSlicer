@@ -301,6 +301,17 @@ struct PageUpdate: ConfigWizardPage
     PageUpdate(ConfigWizard *parent);
 };
 
+//@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
+#if ENABLE_CONFIGURABLE_PATHS_EXPORT_TO_3MF_AND_AMF
+struct PageReloadFromDisk : ConfigWizardPage
+{
+    bool full_pathnames;
+
+    PageReloadFromDisk(ConfigWizard* parent);
+};
+#endif // ENABLE_CONFIGURABLE_PATHS_EXPORT_TO_3MF_AND_AMF
+//@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
+
 struct PageMode: ConfigWizardPage
 {
     wxRadioButton *radio_simple;
@@ -455,6 +466,11 @@ struct ConfigWizard::priv
     PageMaterials    *page_sla_materials = nullptr;
     PageCustom       *page_custom = nullptr;
     PageUpdate       *page_update = nullptr;
+//@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
+#if ENABLE_CONFIGURABLE_PATHS_EXPORT_TO_3MF_AND_AMF
+    PageReloadFromDisk *page_reload_from_disk = nullptr;
+#endif // ENABLE_CONFIGURABLE_PATHS_EXPORT_TO_3MF_AND_AMF
+//@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
     PageMode         *page_mode = nullptr;
     PageVendors      *page_vendors = nullptr;
     Pages3rdparty     pages_3rdparty;
@@ -489,7 +505,8 @@ struct ConfigWizard::priv
     void on_printer_pick(PagePrinters *page, const PrinterPickerEvent &evt);
     void on_3rdparty_install(const VendorProfile *vendor, bool install);
 
-    bool check_material_config(Technology technology);
+    bool on_bnt_finish();
+    bool check_materials_in_config(Technology technology);
     void apply_config(AppConfig *app_config, PresetBundle *preset_bundle, const PresetUpdater *updater);
     // #ys_FIXME_alise
     void update_presets_in_config(const std::string& section, const std::string& alias_key, bool add);
