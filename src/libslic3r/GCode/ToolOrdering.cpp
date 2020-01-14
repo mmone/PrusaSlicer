@@ -15,6 +15,8 @@
 
 #include <libslic3r.h>
 
+#include "../GCodeWriter.hpp"
+
 namespace Slic3r {
 
 
@@ -34,6 +36,39 @@ bool LayerTools::is_extruder_order(unsigned int a, unsigned int b) const
     return false;
 }
 
+// Return a zero based extruder from the region, or extruder_override if overriden.
+unsigned int LayerTools::perimeter_extruder(const PrintRegion &region) const
+{
+	assert(region.config().perimeter_extruder.value > 0);
+	return ((this->extruder_override == 0) ? region.config().perimeter_extruder.value : this->extruder_override) - 1;
+}
+
+unsigned int LayerTools::infill_extruder(const PrintRegion &region) const
+{
+	assert(region.config().infill_extruder.value > 0);
+	return ((this->extruder_override == 0) ? region.config().infill_extruder.value : this->extruder_override) - 1;
+}
+
+unsigned int LayerTools::solid_infill_extruder(const PrintRegion &region) const
+{
+	assert(region.config().solid_infill_extruder.value > 0);
+	return ((this->extruder_override == 0) ? region.config().solid_infill_extruder.value : this->extruder_override) - 1;
+}
+
+// Returns a zero based extruder this eec should be printed with, according to PrintRegion config or extruder_override if overriden.
+unsigned int LayerTools::extruder(const ExtrusionEntityCollection &extrusions, const PrintRegion &region) const
+{
+	assert(region.config().perimeter_extruder.value > 0);
+	assert(region.config().infill_extruder.value > 0);
+	assert(region.config().solid_infill_extruder.value > 0);
+	// 1 based extruder ID.
+	unsigned int extruder = ((this->extruder_override == 0) ?
+	    (is_infill(extrusions.role()) ?
+	    	(is_solid_infill(extrusions.entities.front()->role()) ? region.config().solid_infill_extruder : region.config().infill_extruder) :
+			region.config().perimeter_extruder.value) :
+		this->extruder_override);
+	return (extruder == 0) ? 0 : extruder - 1;
+}
 
 // For the use case when each object is printed separately
 // (print.config().complete_objects is true).
@@ -54,7 +89,7 @@ ToolOrdering::ToolOrdering(const PrintObject &object, unsigned int first_extrude
     }
 
     // Collect extruders reuqired to print the layers.
-    this->collect_extruders(object);
+    this->collect_extruders(object, std::vector<std::pair<double, unsigned int>>());
 
     // Reorder the extruders to minimize tool switches.
     this->reorder_extruders(first_extruder);
@@ -91,9 +126,15 @@ ToolOrdering::ToolOrdering(const Print &print, unsigned int first_extruder, bool
         this->initialize_layers(zs);
     }
 
+	// Use the extruder switches from Model::custom_gcode_per_print_z to override the extruder to print the object.
+	// Do it only if all the objects were configured to be printed with a single extruder.
+	std::vector<std::pair<double, unsigned int>> per_layer_extruder_switches;
+	if (print.object_extruders().size() == 1)
+		per_layer_extruder_switches = custom_tool_changes(print.model(), (unsigned int)print.config().nozzle_diameter.size());
+
     // Collect extruders reuqired to print the layers.
     for (auto object : print.objects())
-        this->collect_extruders(*object);
+        this->collect_extruders(*object, per_layer_extruder_switches);
 
     // Reorder the extruders to minimize tool switches.
     this->reorder_extruders(first_extruder);
@@ -101,6 +142,11 @@ ToolOrdering::ToolOrdering(const Print &print, unsigned int first_extruder, bool
     this->fill_wipe_tower_partitions(print.config(), object_bottom_z);
 
     this->collect_extruder_statistics(prime_multi_material);
+
+    // Assign custom G-code actions from Model::custom_gcode_per_print_z to their respecive layers,
+    // ignoring the extruder switches, which were processed above, and ignoring color changes for extruders,
+    // that do not print above their respective print_z.
+    this->assign_custom_gcodes(print);
 }
 
 void ToolOrdering::initialize_layers(std::vector<coordf_t> &zs)
@@ -119,7 +165,7 @@ void ToolOrdering::initialize_layers(std::vector<coordf_t> &zs)
 }
 
 // Collect extruders reuqired to print layers.
-void ToolOrdering::collect_extruders(const PrintObject &object)
+void ToolOrdering::collect_extruders(const PrintObject &object, const std::vector<std::pair<double, unsigned int>> &per_layer_extruder_switches)
 {
     // Collect the support extruders.
     for (auto support_layer : object.support_layers()) {
@@ -136,9 +182,23 @@ void ToolOrdering::collect_extruders(const PrintObject &object)
         if (has_support || has_interface)
             layer_tools.has_support = true;
     }
+
+    // Extruder overrides are ordered by print_z.
+    std::vector<std::pair<double, unsigned int>>::const_iterator it_per_layer_extruder_override;
+	it_per_layer_extruder_override = per_layer_extruder_switches.begin();
+    unsigned int extruder_override = 0;
+
     // Collect the object extruders.
     for (auto layer : object.layers()) {
         LayerTools &layer_tools = this->tools_for_layer(layer->print_z);
+
+        // Override extruder with the next 
+    	for (; it_per_layer_extruder_override != per_layer_extruder_switches.end() && it_per_layer_extruder_override->first < layer->print_z + EPSILON; ++ it_per_layer_extruder_override)
+    		extruder_override = (int)it_per_layer_extruder_override->second;
+
+        // Store the current extruder override (set to zero if no overriden), so that layer_tools.wiping_extrusions().is_overridable_and_mark() will use it.
+        layer_tools.extruder_override = extruder_override;
+
         // What extruders are required to print this object layer?
         for (size_t region_id = 0; region_id < object.region_volumes.size(); ++ region_id) {
             const LayerRegion *layerm = (region_id < layer->regions().size()) ? layer->regions()[region_id] : nullptr;
@@ -159,11 +219,10 @@ void ToolOrdering::collect_extruders(const PrintObject &object)
                 }
 
                 if (something_nonoverriddable)
-               		layer_tools.extruders.push_back(region.config().perimeter_extruder.value);
+               		layer_tools.extruders.emplace_back((extruder_override == 0) ? region.config().perimeter_extruder.value : extruder_override);
 
                 layer_tools.has_object = true;
             }
-
 
             bool has_infill       = false;
             bool has_solid_infill = false;
@@ -183,12 +242,14 @@ void ToolOrdering::collect_extruders(const PrintObject &object)
                 }
             }
 
-            if (something_nonoverriddable || !m_print_config_ptr)
-            {
-                if (has_solid_infill)
-                    layer_tools.extruders.push_back(region.config().solid_infill_extruder);
-                if (has_infill)
-                    layer_tools.extruders.push_back(region.config().infill_extruder);
+            if (something_nonoverriddable || !m_print_config_ptr) {
+            	if (extruder_override == 0) {
+	                if (has_solid_infill)
+	                    layer_tools.extruders.emplace_back(region.config().solid_infill_extruder);
+	                if (has_infill)
+	                    layer_tools.extruders.emplace_back(region.config().infill_extruder);
+            	} else if (has_solid_infill || has_infill)
+            		layer_tools.extruders.emplace_back(extruder_override);
             }
             if (has_solid_infill || has_infill)
                 layer_tools.has_object = true;
@@ -201,7 +262,7 @@ void ToolOrdering::collect_extruders(const PrintObject &object)
 
         // make sure that there are some tools for each object layer (e.g. tall wiping object will result in empty extruders vector)
         if (layer.extruders.empty() && layer.has_object)
-            layer.extruders.push_back(0); // 0="dontcare" extruder - it will be taken care of in reorder_extruders
+            layer.extruders.emplace_back(0); // 0="dontcare" extruder - it will be taken care of in reorder_extruders
     }
 }
 
@@ -256,10 +317,8 @@ void ToolOrdering::reorder_extruders(unsigned int last_extruder_id)
         for (unsigned int &extruder_id : lt.extruders) {
             assert(extruder_id > 0);
             -- extruder_id;
-        }
+        }    
 }
-
-
 
 void ToolOrdering::fill_wipe_tower_partitions(const PrintConfig &config, coordf_t object_bottom_z)
 {
@@ -396,6 +455,46 @@ void ToolOrdering::collect_extruder_statistics(bool prime_multi_material)
     }
 }
 
+// Assign a pointer to a custom G-code to the respective ToolOrdering::LayerTools.
+// Ignore color changes, which are performed on a layer and for such an extruder, that the extruder will not be printing above that layer.
+// If multiple events are planned over a span of a single layer, use the last one.
+void ToolOrdering::assign_custom_gcodes(const Print &print)
+{
+	const std::vector<Model::CustomGCode>	&custom_gcode_per_print_z = print.model().custom_gcode_per_print_z;
+	if (custom_gcode_per_print_z.empty())
+		return;
+
+	unsigned int 							 num_extruders = *std::max_element(m_all_printing_extruders.begin(), m_all_printing_extruders.end()) + 1;
+	std::vector<unsigned char> 				 extruder_printing_above(num_extruders, false);
+	auto 									 custom_gcode_it = custom_gcode_per_print_z.rbegin();
+	// From the last layer to the first one:
+	for (auto it_lt = m_layer_tools.rbegin(); it_lt != m_layer_tools.rend(); ++ it_lt) {
+		LayerTools &lt = *it_lt;
+		// Add the extruders of the current layer to the set of extruders printing at and above this print_z.
+		for (unsigned int i : lt.extruders)
+			extruder_printing_above[i] = true;
+		// Skip all custom G-codes above this layer and skip all extruder switches.
+		for (; custom_gcode_it != custom_gcode_per_print_z.rend() && (custom_gcode_it->print_z > lt.print_z + EPSILON || custom_gcode_it->gcode == ExtruderChangeCode); ++ custom_gcode_it);
+		if (custom_gcode_it == custom_gcode_per_print_z.rend())
+			// Custom G-codes were processed.
+			break;
+		// Some custom G-code is configured for this layer or a layer below.
+		const Model::CustomGCode &custom_gcode = *custom_gcode_it;
+		// print_z of the layer below the current layer.
+		coordf_t print_z_below = 0.;
+		if (auto it_lt_below = it_lt; -- it_lt_below != m_layer_tools.rend())
+			print_z_below = it_lt_below->print_z;
+		if (custom_gcode.print_z > print_z_below - EPSILON) {
+			// The custom G-code applies to the current layer.
+			if (custom_gcode.gcode != ColorChangeCode || extruder_printing_above[unsigned(custom_gcode.extruder - 1)])
+				// If it is color change, it will actually be useful as the exturder above will print.
+        		lt.custom_gcode = &custom_gcode;
+			// Consume that custom G-code event.
+			-- custom_gcode_it;
+		}
+	}
+}
+
 const LayerTools& ToolOrdering::tools_for_layer(coordf_t print_z) const
 {
     auto it_layer_tools = std::lower_bound(m_layer_tools.begin(), m_layer_tools.end(), LayerTools(print_z - EPSILON));
@@ -413,7 +512,7 @@ const LayerTools& ToolOrdering::tools_for_layer(coordf_t print_z) const
 }
 
 // This function is called from Print::mark_wiping_extrusions and sets extruder this entity should be printed with (-1 .. as usual)
-void WipingExtrusions::set_extruder_override(const ExtrusionEntity* entity, unsigned int copy_id, int extruder, unsigned int num_of_copies)
+void WipingExtrusions::set_extruder_override(const ExtrusionEntity* entity, size_t copy_id, int extruder, size_t num_of_copies)
 {
     something_overridden = true;
 
@@ -449,11 +548,10 @@ int WipingExtrusions::last_nonsoluble_extruder_on_layer(const PrintConfig& print
     return (-1);
 }
 
-
 // Decides whether this entity could be overridden
 bool WipingExtrusions::is_overriddable(const ExtrusionEntityCollection& eec, const PrintConfig& print_config, const PrintObject& object, const PrintRegion& region) const
 {
-    if (print_config.filament_soluble.get_at(Print::get_extruder(eec, region)))
+    if (print_config.filament_soluble.get_at(m_layer_tools->extruder(eec, region)))
         return false;
 
     if (object.config().wipe_into_objects)
@@ -472,9 +570,8 @@ float WipingExtrusions::mark_wiping_extrusions(const Print& print, unsigned int 
     const LayerTools& lt = *m_layer_tools;
     const float min_infill_volume = 0.f; // ignore infill with smaller volume than this
 
-    assert(volume_to_wipe >= 0.);
-    if (! this->something_overridable || volume_to_wipe == 0. || print.config().filament_soluble.get_at(old_extruder) || print.config().filament_soluble.get_at(new_extruder))
-        return volume_to_wipe;      // Soluble filament cannot be wiped in a random infill, neither the filament after it
+    if (! this->something_overridable || volume_to_wipe <= 0. || print.config().filament_soluble.get_at(old_extruder) || print.config().filament_soluble.get_at(new_extruder))
+        return 0.f; // Soluble filament cannot be wiped in a random infill, neither the filament after it
 
     // we will sort objects so that dedicated for wiping are at the beginning:
     PrintObjectPtrs object_list = print.objects();
@@ -522,7 +619,7 @@ float WipingExtrusions::mark_wiping_extrusions(const Print& print, unsigned int 
                         if (wipe_into_infill_only && ! print.config().infill_first)
                             // In this case we must check that the original extruder is used on this layer before the one we are overridding
                             // (and the perimeters will be finished before the infill is printed):
-                            if (!lt.is_extruder_order(region.config().perimeter_extruder - 1, new_extruder))
+                            if (!lt.is_extruder_order(lt.perimeter_extruder(region), new_extruder))
                                 continue;
 
                         if ((!is_entity_overridden(fill, copy) && fill->total_volume() > min_infill_volume)) {     // this infill will be used to wipe this extruder
@@ -597,8 +694,8 @@ void WipingExtrusions::ensure_perimeters_infills_order(const Print& print)
                     // Either way, we will now force-override it with something suitable:
                     if (print.config().infill_first
                     || object->config().wipe_into_objects  // in this case the perimeter is overridden, so we can override by the last one safely
-                    || lt.is_extruder_order(region.config().perimeter_extruder - 1, last_nonsoluble_extruder    // !infill_first, but perimeter is already printed when last extruder prints
-                    || ! lt.has_extruder(region.config().infill_extruder - 1))) // we have to force override - this could violate infill_first (FIXME)
+                    || lt.is_extruder_order(lt.perimeter_extruder(region), last_nonsoluble_extruder    // !infill_first, but perimeter is already printed when last extruder prints
+                    || ! lt.has_extruder(lt.infill_extruder(region)))) // we have to force override - this could violate infill_first (FIXME)
                         set_extruder_override(fill, copy, (print.config().infill_first ? first_nonsoluble_extruder : last_nonsoluble_extruder), num_of_copies);
                     else {
                         // In this case we can (and should) leave it to be printed normally.
