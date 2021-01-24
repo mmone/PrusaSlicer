@@ -3,6 +3,8 @@
 
 #include "GLGizmoBase.hpp"
 
+#include "libslic3r/BoundingBox.hpp"
+
 
 namespace Slic3r {
 namespace GUI {
@@ -41,6 +43,8 @@ public:
     void set_scale(const Vec3d& scale) { m_starting.scale = scale; m_scale = scale; }
 
     const Vec3d& get_offset() const { return m_offset; }
+
+    std::string get_tooltip() const override;
 
 protected:
     virtual bool on_init();

@@ -1,5 +1,6 @@
 #include "Print.hpp"
 #include "ToolOrdering.hpp"
+#include "Layer.hpp"
 
 // #define SLIC3R_DEBUG
 
@@ -15,7 +16,6 @@
 
 #include <libslic3r.h>
 
-#include "../GCodeWriter.hpp"
 
 namespace Slic3r {
 
@@ -94,7 +94,7 @@ ToolOrdering::ToolOrdering(const PrintObject &object, unsigned int first_extrude
     // Reorder the extruders to minimize tool switches.
     this->reorder_extruders(first_extruder);
 
-    this->fill_wipe_tower_partitions(object.print()->config(), object.layers().front()->print_z - object.layers().front()->height);
+    this->fill_wipe_tower_partitions(object.print()->config(), object.layers().front()->print_z - object.layers().front()->height, object.config().layer_height);
 
     this->collect_extruder_statistics(prime_multi_material);
 }
@@ -107,6 +107,7 @@ ToolOrdering::ToolOrdering(const Print &print, unsigned int first_extruder, bool
 
     // Initialize the print layers for all objects and all layers.
     coordf_t object_bottom_z = 0.;
+    coordf_t max_layer_height = 0.;
     {
         std::vector<coordf_t> zs;
         for (auto object : print.objects()) {
@@ -122,6 +123,8 @@ ToolOrdering::ToolOrdering(const Print &print, unsigned int first_extruder, bool
                     object_bottom_z = layer->print_z - layer->height;
                     break;
                 }
+
+            max_layer_height = std::max(max_layer_height, object->config().layer_height.value);
         }
         this->initialize_layers(zs);
     }
@@ -129,8 +132,13 @@ ToolOrdering::ToolOrdering(const Print &print, unsigned int first_extruder, bool
 	// Use the extruder switches from Model::custom_gcode_per_print_z to override the extruder to print the object.
 	// Do it only if all the objects were configured to be printed with a single extruder.
 	std::vector<std::pair<double, unsigned int>> per_layer_extruder_switches;
-	if (print.object_extruders().size() == 1)
-		per_layer_extruder_switches = custom_tool_changes(print.model(), (unsigned int)print.config().nozzle_diameter.size());
+	if (auto num_extruders = unsigned(print.config().nozzle_diameter.size());
+		num_extruders > 1 && print.object_extruders().size() == 1 && // the current Print's configuration is CustomGCode::MultiAsSingle
+		print.model().custom_gcode_per_print_z.mode == CustomGCode::MultiAsSingle) {
+		// Printing a single extruder platter on a printer with more than 1 extruder (or single-extruder multi-material).
+		// There may be custom per-layer tool changes available at the model.
+		per_layer_extruder_switches = custom_tool_changes(print.model().custom_gcode_per_print_z, num_extruders);
+	}
 
     // Collect extruders reuqired to print the layers.
     for (auto object : print.objects())
@@ -139,14 +147,9 @@ ToolOrdering::ToolOrdering(const Print &print, unsigned int first_extruder, bool
     // Reorder the extruders to minimize tool switches.
     this->reorder_extruders(first_extruder);
 
-    this->fill_wipe_tower_partitions(print.config(), object_bottom_z);
+    this->fill_wipe_tower_partitions(print.config(), object_bottom_z, max_layer_height);
 
     this->collect_extruder_statistics(prime_multi_material);
-
-    // Assign custom G-code actions from Model::custom_gcode_per_print_z to their respecive layers,
-    // ignoring the extruder switches, which were processed above, and ignoring color changes for extruders,
-    // that do not print above their respective print_z.
-    this->assign_custom_gcodes(print);
 }
 
 void ToolOrdering::initialize_layers(std::vector<coordf_t> &zs)
@@ -212,10 +215,8 @@ void ToolOrdering::collect_extruders(const PrintObject &object, const std::vecto
                 if (m_print_config_ptr) { // in this case complete_objects is false (see ToolOrdering constructors)
                     something_nonoverriddable = false;
                     for (const auto& eec : layerm->perimeters.entities) // let's check if there are nonoverriddable entities
-                        if (!layer_tools.wiping_extrusions().is_overriddable_and_mark(dynamic_cast<const ExtrusionEntityCollection&>(*eec), *m_print_config_ptr, object, region)) {
+                        if (!layer_tools.wiping_extrusions().is_overriddable_and_mark(dynamic_cast<const ExtrusionEntityCollection&>(*eec), *m_print_config_ptr, object, region))
                             something_nonoverriddable = true;
-                            break;
-                        }
                 }
 
                 if (something_nonoverriddable)
@@ -237,7 +238,7 @@ void ToolOrdering::collect_extruders(const PrintObject &object, const std::vecto
                     has_infill = true;
 
                 if (m_print_config_ptr) {
-                    if (!something_nonoverriddable && !layer_tools.wiping_extrusions().is_overriddable_and_mark(*fill, *m_print_config_ptr, object, region))
+                    if (! layer_tools.wiping_extrusions().is_overriddable_and_mark(*fill, *m_print_config_ptr, object, region))
                         something_nonoverriddable = true;
                 }
             }
@@ -320,7 +321,7 @@ void ToolOrdering::reorder_extruders(unsigned int last_extruder_id)
         }    
 }
 
-void ToolOrdering::fill_wipe_tower_partitions(const PrintConfig &config, coordf_t object_bottom_z)
+void ToolOrdering::fill_wipe_tower_partitions(const PrintConfig &config, coordf_t object_bottom_z, coordf_t max_object_layer_height)
 {
     if (m_layer_tools.empty())
         return;
@@ -353,6 +354,10 @@ void ToolOrdering::fill_wipe_tower_partitions(const PrintConfig &config, coordf_
             mlh = 0.75 * config.nozzle_diameter.values[i];
         max_layer_height = std::min(max_layer_height, mlh);
     }
+    // The Prusa3D Fast (0.35mm layer height) print profile sets a higher layer height than what is normally allowed
+    // by the nozzle. This is a hack and it works by increasing extrusion width. See GH #3919.
+    max_layer_height = std::max(max_layer_height, max_object_layer_height);
+
     for (size_t i = 0; i + 1 < m_layer_tools.size(); ++ i) {
         const LayerTools &lt      = m_layer_tools[i];
         const LayerTools &lt_next = m_layer_tools[i + 1];
@@ -406,7 +411,7 @@ void ToolOrdering::fill_wipe_tower_partitions(const PrintConfig &config, coordf_
         unsigned int j = i+1;
         double last_wipe_tower_print_z = lt_next.print_z;
         while (++j < m_layer_tools.size()-1 && !m_layer_tools[j].has_wipe_tower)
-            if (m_layer_tools[j+1].print_z - last_wipe_tower_print_z > max_layer_height) {
+            if (m_layer_tools[j+1].print_z - last_wipe_tower_print_z > max_layer_height + EPSILON) {
                 m_layer_tools[j].has_wipe_tower = true;
                 last_wipe_tower_print_z = m_layer_tools[j].print_z;
             }
@@ -460,13 +465,26 @@ void ToolOrdering::collect_extruder_statistics(bool prime_multi_material)
 // If multiple events are planned over a span of a single layer, use the last one.
 void ToolOrdering::assign_custom_gcodes(const Print &print)
 {
-	const std::vector<Model::CustomGCode>	&custom_gcode_per_print_z = print.model().custom_gcode_per_print_z;
-	if (custom_gcode_per_print_z.empty())
+	// Only valid for non-sequential print.
+	assert(! print.config().complete_objects.value);
+
+	const CustomGCode::Info	&custom_gcode_per_print_z = print.model().custom_gcode_per_print_z;
+	if (custom_gcode_per_print_z.gcodes.empty())
 		return;
 
-	unsigned int 							 num_extruders = *std::max_element(m_all_printing_extruders.begin(), m_all_printing_extruders.end()) + 1;
-	std::vector<unsigned char> 				 extruder_printing_above(num_extruders, false);
-	auto 									 custom_gcode_it = custom_gcode_per_print_z.rbegin();
+	auto 						num_extruders = unsigned(print.config().nozzle_diameter.size());
+	CustomGCode::Mode 			mode          =
+		(num_extruders == 1) ? CustomGCode::SingleExtruder :
+		print.object_extruders().size() == 1 ? CustomGCode::MultiAsSingle : CustomGCode::MultiExtruder;
+	CustomGCode::Mode           model_mode    = print.model().custom_gcode_per_print_z.mode;
+	std::vector<unsigned char> 	extruder_printing_above(num_extruders, false);
+	auto 						custom_gcode_it = custom_gcode_per_print_z.gcodes.rbegin();
+	// Tool changes and color changes will be ignored, if the model's tool/color changes were entered in mm mode and the print is in non mm mode
+	// or vice versa.
+	bool 						ignore_tool_and_color_changes = (mode == CustomGCode::MultiExtruder) != (model_mode == CustomGCode::MultiExtruder);
+	// If printing on a single extruder machine, make the tool changes trigger color change (M600) events.
+	bool 						tool_changes_as_color_changes = mode == CustomGCode::SingleExtruder && model_mode == CustomGCode::MultiAsSingle;
+
 	// From the last layer to the first one:
 	for (auto it_lt = m_layer_tools.rbegin(); it_lt != m_layer_tools.rend(); ++ it_lt) {
 		LayerTools &lt = *it_lt;
@@ -474,23 +492,31 @@ void ToolOrdering::assign_custom_gcodes(const Print &print)
 		for (unsigned int i : lt.extruders)
 			extruder_printing_above[i] = true;
 		// Skip all custom G-codes above this layer and skip all extruder switches.
-		for (; custom_gcode_it != custom_gcode_per_print_z.rend() && (custom_gcode_it->print_z > lt.print_z + EPSILON || custom_gcode_it->gcode == ExtruderChangeCode); ++ custom_gcode_it);
-		if (custom_gcode_it == custom_gcode_per_print_z.rend())
+		for (; custom_gcode_it != custom_gcode_per_print_z.gcodes.rend() && (custom_gcode_it->print_z > lt.print_z + EPSILON || custom_gcode_it->type == CustomGCode::ToolChange); ++ custom_gcode_it);
+		if (custom_gcode_it == custom_gcode_per_print_z.gcodes.rend())
 			// Custom G-codes were processed.
 			break;
 		// Some custom G-code is configured for this layer or a layer below.
-		const Model::CustomGCode &custom_gcode = *custom_gcode_it;
+		const CustomGCode::Item &custom_gcode = *custom_gcode_it;
 		// print_z of the layer below the current layer.
 		coordf_t print_z_below = 0.;
-		if (auto it_lt_below = it_lt; -- it_lt_below != m_layer_tools.rend())
+		if (auto it_lt_below = it_lt; ++ it_lt_below != m_layer_tools.rend())
 			print_z_below = it_lt_below->print_z;
-		if (custom_gcode.print_z > print_z_below - EPSILON) {
+		if (custom_gcode.print_z > print_z_below + 0.5 * EPSILON) {
 			// The custom G-code applies to the current layer.
-			if (custom_gcode.gcode != ColorChangeCode || extruder_printing_above[unsigned(custom_gcode.extruder - 1)])
+			bool color_change = custom_gcode.type == CustomGCode::ColorChange;
+			bool tool_change  = custom_gcode.type == CustomGCode::ToolChange;
+			bool pause_or_custom_gcode = ! color_change && ! tool_change;
+			bool apply_color_change = ! ignore_tool_and_color_changes &&
 				// If it is color change, it will actually be useful as the exturder above will print.
+				(color_change ? 
+					mode == CustomGCode::SingleExtruder || 
+						(custom_gcode.extruder <= int(num_extruders) && extruder_printing_above[unsigned(custom_gcode.extruder - 1)]) :
+				 	tool_change && tool_changes_as_color_changes);
+			if (pause_or_custom_gcode || apply_color_change)
         		lt.custom_gcode = &custom_gcode;
 			// Consume that custom G-code event.
-			-- custom_gcode_it;
+			++ custom_gcode_it;
 		}
 	}
 }
@@ -571,7 +597,7 @@ float WipingExtrusions::mark_wiping_extrusions(const Print& print, unsigned int 
     const float min_infill_volume = 0.f; // ignore infill with smaller volume than this
 
     if (! this->something_overridable || volume_to_wipe <= 0. || print.config().filament_soluble.get_at(old_extruder) || print.config().filament_soluble.get_at(new_extruder))
-        return 0.f; // Soluble filament cannot be wiped in a random infill, neither the filament after it
+        return std::max(0.f, volume_to_wipe); // Soluble filament cannot be wiped in a random infill, neither the filament after it
 
     // we will sort objects so that dedicated for wiping are at the beginning:
     PrintObjectPtrs object_list = print.objects();
@@ -597,7 +623,7 @@ float WipingExtrusions::mark_wiping_extrusions(const Print& print, unsigned int 
         const Layer* this_layer = object->get_layer_at_printz(lt.print_z, EPSILON);
         if (this_layer == nullptr)
         	continue;
-        size_t num_of_copies = object->copies().size();
+        size_t num_of_copies = object->instances().size();
 
         // iterate through copies (aka PrintObject instances) first, so that we mark neighbouring infills to minimize travel moves
         for (unsigned int copy = 0; copy < num_of_copies; ++copy) {
@@ -672,7 +698,7 @@ void WipingExtrusions::ensure_perimeters_infills_order(const Print& print)
         const Layer* this_layer = object->get_layer_at_printz(lt.print_z, EPSILON);
         if (this_layer == nullptr)
         	continue;
-        size_t num_of_copies = object->copies().size();
+        size_t num_of_copies = object->instances().size();
 
         for (size_t copy = 0; copy < num_of_copies; ++copy) {    // iterate through copies first, so that we mark neighbouring infills to minimize travel moves
             for (size_t region_id = 0; region_id < object->region_volumes.size(); ++ region_id) {

@@ -14,6 +14,8 @@ namespace Slic3r {
 class Print;
 class PrintObject;
 class LayerTools;
+namespace CustomGCode { struct Item; }
+class PrintRegion;
 
 
 
@@ -29,14 +31,6 @@ public:
 
     // When allocating extruder overrides of an object's ExtrusionEntity, overrides for maximum 3 copies are allocated in place.
     typedef boost::container::small_vector<int32_t, 3> ExtruderPerCopy;
-
-    class ExtruderOverrides
-    {
-    public:
-    	ExtruderOverrides(const ExtruderPerCopy *overrides, const int correct_extruder_id) : m_overrides(overrides) {}
-    private:
-    	const ExtruderPerCopy *m_overrides;
-    };
 
     // This is called from GCode::process_layer - see implementation for further comments:
     const ExtruderPerCopy* get_extruder_overrides(const ExtrusionEntity* entity, int correct_extruder_id, size_t num_of_copies);
@@ -72,7 +66,7 @@ private:
     std::map<const ExtrusionEntity*, ExtruderPerCopy> entity_map;  // to keep track of who prints what
     bool something_overridable = false;
     bool something_overridden = false;
-    const LayerTools* m_layer_tools;    // so we know which LayerTools object this belongs to
+    const LayerTools* m_layer_tools = nullptr;    // so we know which LayerTools object this belongs to
 };
 
 
@@ -114,7 +108,7 @@ public:
     size_t                      wipe_tower_partitions = 0;
     coordf_t 					wipe_tower_layer_height = 0.;
     // Custom G-code (color change, extruder switch, pause) to be performed before this layer starts to print.
-    const Model::CustomGCode   *custom_gcode = nullptr;
+    const CustomGCode::Item    *custom_gcode = nullptr;
 
     WipingExtrusions& wiping_extrusions() {
         m_wiping_extrusions.set_layer_tools_ptr(this);
@@ -143,6 +137,12 @@ public:
 
     void 				clear() { m_layer_tools.clear(); }
 
+    // Only valid for non-sequential print:
+	// Assign a pointer to a custom G-code to the respective ToolOrdering::LayerTools.
+	// Ignore color changes, which are performed on a layer and for such an extruder, that the extruder will not be printing above that layer.
+	// If multiple events are planned over a span of a single layer, use the last one.
+	void 				assign_custom_gcodes(const Print &print);
+
     // Get the first extruder printing, including the extruder priming areas, returns -1 if there is no layer printed.
     unsigned int   		first_extruder() const { return m_first_printing_extruder; }
 
@@ -168,9 +168,8 @@ private:
     void				initialize_layers(std::vector<coordf_t> &zs);
     void 				collect_extruders(const PrintObject &object, const std::vector<std::pair<double, unsigned int>> &per_layer_extruder_switches);
     void				reorder_extruders(unsigned int last_extruder_id);
-    void 				fill_wipe_tower_partitions(const PrintConfig &config, coordf_t object_bottom_z);
+    void 				fill_wipe_tower_partitions(const PrintConfig &config, coordf_t object_bottom_z, coordf_t max_layer_height);
     void 				collect_extruder_statistics(bool prime_multi_material);
-	void 				assign_custom_gcodes(const Print &print);
 
     std::vector<LayerTools>    m_layer_tools;
     // First printing extruder, including the multi-material priming sequence.

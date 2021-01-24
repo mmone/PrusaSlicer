@@ -18,6 +18,8 @@ public:
         return packed_bins_;
     }
 
+    inline int lastPackedBinId() const { return last_packed_bin_id_; }
+
     inline void progressIndicator(ProgressFunction fn) { progress_ = fn; }
 
     inline void stopCondition(StopCondition cond) { stopcond_ = cond; }
@@ -43,7 +45,10 @@ protected:
 
             Placer p{bin};
             p.configure(pcfg);
-            if (itm.area() <= 0 || !p.pack(cpy)) it = c.erase(it);
+            if (itm.area() <= 0 || !p.pack(cpy)) {
+                static_cast<Item&>(*it).binId(BIN_ID_UNSET);
+                it = c.erase(it);
+            }
             else it++;
         }
     }
@@ -51,6 +56,7 @@ protected:
     PackGroup packed_bins_;
     ProgressFunction progress_ = [](unsigned){};
     StopCondition stopcond_ = [](){ return false; };
+    int last_packed_bin_id_ = -1;
 };
 
 }

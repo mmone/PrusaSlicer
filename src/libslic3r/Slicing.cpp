@@ -41,6 +41,23 @@ inline coordf_t max_layer_height_from_nozzle(const PrintConfig &print_config, in
     return std::max(min_layer_height, (max_layer_height == 0.) ? (0.75 * nozzle_dmr) : max_layer_height);
 }
 
+// Minimum layer height for the variable layer height algorithm.
+coordf_t Slicing::min_layer_height_from_nozzle(const DynamicPrintConfig &print_config, int idx_nozzle)
+{
+    coordf_t min_layer_height = print_config.opt_float("min_layer_height", idx_nozzle - 1);
+    return (min_layer_height == 0.) ? MIN_LAYER_HEIGHT_DEFAULT : std::max(MIN_LAYER_HEIGHT, min_layer_height);
+}
+
+// Maximum layer height for the variable layer height algorithm, 3/4 of a nozzle dimaeter by default,
+// it should not be smaller than the minimum layer height.
+coordf_t Slicing::max_layer_height_from_nozzle(const DynamicPrintConfig &print_config, int idx_nozzle)
+{
+    coordf_t min_layer_height = min_layer_height_from_nozzle(print_config, idx_nozzle);
+    coordf_t max_layer_height = print_config.opt_float("max_layer_height", idx_nozzle - 1);
+    coordf_t nozzle_dmr       = print_config.opt_float("nozzle_diameter", idx_nozzle - 1);
+    return std::max(min_layer_height, (max_layer_height == 0.) ? (0.75 * nozzle_dmr) : max_layer_height);
+}
+
 SlicingParameters SlicingParameters::create_from_config(
 	const PrintConfig 		&print_config, 
 	const PrintObjectConfig &object_config,
@@ -153,24 +170,15 @@ SlicingParameters SlicingParameters::create_from_config(
     return params;
 }
 
-std::vector<std::pair<t_layer_height_range, coordf_t>> layer_height_ranges(const t_layer_config_ranges &config_ranges)
-{
-	std::vector<std::pair<t_layer_height_range, coordf_t>> out;
-	out.reserve(config_ranges.size());
-	for (const auto &kvp : config_ranges)
-		out.emplace_back(kvp.first, kvp.second.option("layer_height")->getFloat());
-	return out;
-}
-
 // Convert layer_config_ranges to layer_height_profile. Both are referenced to z=0, meaning the raft layers are not accounted for
 // in the height profile and the printed object may be lifted by the raft thickness at the time of the G-code generation.
 std::vector<coordf_t> layer_height_profile_from_ranges(
 	const SlicingParameters 	&slicing_params,
-	const t_layer_config_ranges &layer_config_ranges)                           // #ys_FIXME_experiment
+	const t_layer_config_ranges &layer_config_ranges)
 {
     // 1) If there are any height ranges, trim one by the other to make them non-overlapping. Insert the 1st layer if fixed.
     std::vector<std::pair<t_layer_height_range,coordf_t>> ranges_non_overlapping;
-    ranges_non_overlapping.reserve(layer_config_ranges.size() * 4);             // #ys_FIXME_experiment
+    ranges_non_overlapping.reserve(layer_config_ranges.size() * 4);
     if (slicing_params.first_object_layer_height_fixed())
         ranges_non_overlapping.push_back(std::pair<t_layer_height_range,coordf_t>(
             t_layer_height_range(0., slicing_params.first_object_layer_height), 
@@ -300,26 +308,14 @@ std::vector<double> layer_height_profile_adaptive(const SlicingParameters& slici
         layer_height_profile.push_back(print_z);
         layer_height_profile.push_back(height);
         print_z += height;
-#if !ENABLE_ADAPTIVE_LAYER_HEIGHT_PROFILE
-        layer_height_profile.push_back(print_z);
-        layer_height_profile.push_back(height);
-#endif // !ENABLE_ADAPTIVE_LAYER_HEIGHT_PROFILE
     }
 
-#if ENABLE_ADAPTIVE_LAYER_HEIGHT_PROFILE
     double z_gap = slicing_params.object_print_z_height() - layer_height_profile[layer_height_profile.size() - 2];
     if (z_gap > 0.0)
     {
         layer_height_profile.push_back(slicing_params.object_print_z_height());
         layer_height_profile.push_back(clamp(slicing_params.min_layer_height, slicing_params.max_layer_height, z_gap));
     }
-#else
-    double last = std::max(slicing_params.first_object_layer_height, layer_height_profile[layer_height_profile.size() - 2]);
-    layer_height_profile.push_back(last);
-    layer_height_profile.push_back(slicing_params.first_object_layer_height);
-    layer_height_profile.push_back(slicing_params.object_print_z_height());
-    layer_height_profile.push_back(slicing_params.first_object_layer_height);
-#endif // ENABLE_ADAPTIVE_LAYER_HEIGHT_PROFILE
 
     return layer_height_profile;
 }

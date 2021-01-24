@@ -37,39 +37,7 @@ using t_change = std::function<void(const t_config_option_key&, const boost::any
 using t_back_to_init = std::function<void(const std::string&)>;
 
 wxString double_to_string(double const value, const int max_precision = 4);
-
-class RevertButton : public ScalableButton
-{
-    bool hidden = false; // never show button if it's hidden ones
-public:
-// 	RevertButton() {} 
-// 	RevertButton(wxWindow* parent, wxWindowID id, const wxString& label = wxEmptyString,
-// 		const wxPoint& pos = wxDefaultPosition,
-// 		const wxSize& size = wxDefaultSize, long style = 0,
-// 		const wxValidator& validator = wxDefaultValidator,
-// 		const wxString& name = wxTextCtrlNameStr)
-// 	{
-// 		this->Create(parent, id, label, pos, size, style, validator, name);
-// 	}
-    RevertButton(
-        wxWindow *parent,
-        const std::string& icon_name = ""
-        ) :
-        ScalableButton(parent, wxID_ANY, icon_name) {}
-
-	// overridden from wxWindow base class
-	virtual bool
-		AcceptsFocusFromKeyboard() const { return false; }
-
-    void set_as_hidden() {
-        Hide();
-        hidden = true;
-	}
-
-    virtual bool Show(bool show = true) override {
-        return wxButton::Show(hidden ? false : show);
-	}
-};
+wxString get_thumbnails_string(const std::vector<Vec2d>& values);
 
 class Field {
 protected:
@@ -87,6 +55,8 @@ protected:
     void			on_set_focus(wxEvent& event);
     /// Call the attached on_change method. 
     void			on_change_field();
+
+public:
     /// Call the attached m_back_to_initial_value method. 
 	void			on_back_to_initial_value();
     /// Call the attached m_back_to_sys_value method. 
@@ -119,6 +89,9 @@ public:
 	const t_config_option_key		m_opt_id;//! {""};
 	int								m_opt_idx = 0;
 
+	double							opt_height{ 0.0 };
+	bool							parent_is_custom_ctrl{ false };
+
     /// Sets a value for this control.
     /// subclasses should overload with a specific version
     /// Postcondition: Method does not fire the on_change event.
@@ -140,12 +113,9 @@ public:
 
     void				field_changed() { on_change_field(); }
 
-    // set icon to "UndoToSystemValue" button according to an inheritance of preset
-//	void				set_nonsys_btn_icon(const wxBitmap& icon);
-
     Field(const ConfigOptionDef& opt, const t_config_option_key& id) : m_opt(opt), m_opt_id(id) {};
     Field(wxWindow* parent, const ConfigOptionDef& opt, const t_config_option_key& id) : m_parent(parent), m_opt(opt), m_opt_id(id) {};
-    virtual ~Field() {}
+    virtual ~Field();
 
     /// If you don't know what you are getting back, check both methods for nullptr. 
     virtual wxSizer*	getSizer()  { return nullptr; }
@@ -166,7 +136,6 @@ public:
     bool 	set_undo_bitmap(const ScalableBitmap *bmp) {
     	if (m_undo_bitmap != bmp) {
     		m_undo_bitmap = bmp;
-    		m_Undo_btn->SetBitmap_(*bmp);
     		return true;
     	}
     	return false;
@@ -175,33 +144,21 @@ public:
     bool 	set_undo_to_sys_bitmap(const ScalableBitmap *bmp) {
     	if (m_undo_to_sys_bitmap != bmp) {
     		m_undo_to_sys_bitmap = bmp;
-    		m_Undo_to_sys_btn->SetBitmap_(*bmp);
     		return true;
     	}
     	return false;
     }
 
 	bool	set_label_colour(const wxColour *clr) {
-		if (m_Label == nullptr) return false;
 		if (m_label_color != clr) {
 			m_label_color = clr;
-			m_Label->SetForegroundColour(*clr);
-			m_Label->Refresh(true);
 		}
-		return false;
-	}
-
-	bool	set_label_colour_force(const wxColour *clr) {
-		if (m_Label == nullptr) return false;
-		m_Label->SetForegroundColour(*clr);
-		m_Label->Refresh(true);
 		return false;
 	}
 
 	bool 	set_undo_tooltip(const wxString *tip) {
 		if (m_undo_tooltip != tip) {
 			m_undo_tooltip = tip;
-			m_Undo_btn->SetToolTip(*tip);
 			return true;
 		}
 		return false;
@@ -210,42 +167,45 @@ public:
 	bool 	set_undo_to_sys_tooltip(const wxString *tip) {
 		if (m_undo_to_sys_tooltip != tip) {
 			m_undo_to_sys_tooltip = tip;
-			m_Undo_to_sys_btn->SetToolTip(*tip);
 			return true;
 		}
 		return false;
 	}
 
-	void	set_side_text_ptr(wxStaticText* side_text) {
-		m_side_text = side_text;
+	bool*	get_blink_ptr() {
+		return &m_blink;
     }
 
-    virtual void msw_rescale() {
-        m_Undo_to_sys_btn->msw_rescale();
-        m_Undo_btn->msw_rescale();
-
-        // update em_unit value
-        m_em_unit = em_unit(m_parent);
-    }
+    virtual void msw_rescale();
+    void sys_color_changed();
 
     bool get_enter_pressed() const { return bEnterPressed; }
     void set_enter_pressed(bool pressed) { bEnterPressed = pressed; }
 
+	// Values of width to alignments of fields
+	static int def_width()			;
+	static int def_width_wider()	;
+	static int def_width_thinner()	;
+
+	const ScalableBitmap*	undo_bitmap()			{ return m_undo_bitmap; }
+	const wxString*			undo_tooltip()			{ return m_undo_tooltip; }
+	const ScalableBitmap*	undo_to_sys_bitmap()	{ return m_undo_to_sys_bitmap; }
+	const wxString*			undo_to_sys_tooltip()	{ return m_undo_to_sys_tooltip; }
+	const wxColour*			label_color()			{ return m_label_color; }
+	const bool				blink()					{ return m_blink; }
+
 protected:
-	RevertButton*			m_Undo_btn = nullptr;
 	// Bitmap and Tooltip text for m_Undo_btn. The wxButton will be updated only if the new wxBitmap pointer differs from the currently rendered one.
 	const ScalableBitmap*   m_undo_bitmap = nullptr;
 	const wxString*         m_undo_tooltip = nullptr;
-	RevertButton*			m_Undo_to_sys_btn = nullptr;
 	// Bitmap and Tooltip text for m_Undo_to_sys_btn. The wxButton will be updated only if the new wxBitmap pointer differs from the currently rendered one.
     const ScalableBitmap*   m_undo_to_sys_bitmap = nullptr;
 	const wxString*		    m_undo_to_sys_tooltip = nullptr;
 
-	wxStaticText*		m_Label = nullptr;
+	bool					m_blink{ false };
+
 	// Color for Label. The wxColour will be updated only if the new wxColour pointer differs from the currently rendered one.
 	const wxColour*		m_label_color = nullptr;
-
-	wxStaticText*		m_side_text = nullptr;
 
 	// current value
 	boost::any			m_value;
@@ -275,33 +235,38 @@ class TextCtrl : public Field {
 	bool	bChangedValueEvent = true;
     void    change_field_value(wxEvent& event);
 #endif //__WXGTK__
+
+#ifdef __WXOSX__
+	bool	bKilledFocus = false;
+#endif // __WXOSX__
+
 public:
 	TextCtrl(const ConfigOptionDef& opt, const t_config_option_key& id) : Field(opt,  id) {}
 	TextCtrl(wxWindow* parent, const ConfigOptionDef& opt, const t_config_option_key& id) : Field(parent, opt, id) {}
 	~TextCtrl() {}
 
-    void BUILD();
+    void BUILD() override;
     bool value_was_changed();
     // Propagate value from field to the OptionGroupe and Config after kill_focus/ENTER
     void propagate_value();
     wxWindow* window {nullptr};
 
-    virtual void	set_value(const std::string& value, bool change_event = false) {
+    void	set_value(const std::string& value, bool change_event = false) {
 		m_disable_change_event = !change_event;
         dynamic_cast<wxTextCtrl*>(window)->SetValue(wxString(value));
 		m_disable_change_event = false;
     }
-	virtual void	set_value(const boost::any& value, bool change_event = false) override;
-    virtual void    set_last_meaningful_value() override;
-    virtual void	set_na_value() override;
+	void	set_value(const boost::any& value, bool change_event = false) override;
+    void    set_last_meaningful_value() override;
+    void	set_na_value() override;
 
 	boost::any&		get_value() override;
 
     void            msw_rescale() override;
     
-    virtual void	enable();
-    virtual void	disable();
-    virtual wxWindow* getWindow() { return window; }
+    void			enable() override;
+    void			disable() override;
+    wxWindow* 		getWindow() override { return window; }
 };
 
 class CheckBox : public Field {
@@ -377,7 +342,6 @@ public:
 
 class Choice : public Field {
 	using Field::Field;
-    int             m_width{ 15 };
 public:
 	Choice(const ConfigOptionDef& opt, const t_config_option_key& id) : Field(opt, id) {}
 	Choice(wxWindow* parent, const ConfigOptionDef& opt, const t_config_option_key& id) : Field(parent, opt, id) {}
@@ -389,19 +353,25 @@ public:
     /* Under OSX: wxBitmapComboBox->GetWindowStyle() returns some weard value, 
      * so let use a flag, which has TRUE value for a control without wxCB_READONLY style
      */
-    bool            m_is_editable { false };
+    bool            m_is_editable     { false };
+    bool            m_is_dropped      { false };
+    bool            m_suppress_scroll { false };
+    int             m_last_selected   { wxNOT_FOUND };
 
 	void			set_selection();
 	void			set_value(const std::string& value, bool change_event = false);
-	void			set_value(const boost::any& value, bool change_event = false);
+	void			set_value(const boost::any& value, bool change_event = false) override;
 	void			set_values(const std::vector<std::string> &values);
+	void			set_values(const wxArrayString &values);
 	boost::any&		get_value() override;
 
     void            msw_rescale() override;
 
-	void			enable() override { dynamic_cast<wxBitmapComboBox*>(window)->Enable(); };
-	void			disable() override{ dynamic_cast<wxBitmapComboBox*>(window)->Disable(); };
+	void			enable() override ;//{ dynamic_cast<wxBitmapComboBox*>(window)->Enable(); };
+	void			disable() override;//{ dynamic_cast<wxBitmapComboBox*>(window)->Disable(); };
 	wxWindow*		getWindow() override { return window; }
+
+    void            suppress_scroll();
 };
 
 class ColourPicker : public Field {
@@ -442,10 +412,11 @@ public:
 	wxTextCtrl*		y_textctrl{ nullptr };
 
 	void			BUILD()  override;
+	bool			value_was_changed(wxTextCtrl* win);
     // Propagate value from field to the OptionGroupe and Config after kill_focus/ENTER
     void            propagate_value(wxTextCtrl* win);
 	void			set_value(const Vec2d& value, bool change_event = false);
-	void			set_value(const boost::any& value, bool change_event = false);
+	void			set_value(const boost::any& value, bool change_event = false) override;
 	boost::any&		get_value() override;
 
     void            msw_rescale() override;
@@ -457,6 +428,7 @@ public:
 		x_textctrl->Disable();
 		y_textctrl->Disable(); }
 	wxSizer*		getSizer() override { return sizer; }
+	wxWindow*		getWindow() override { return dynamic_cast<wxWindow*>(x_textctrl); }
 };
 
 class StaticText : public Field {
@@ -474,7 +446,7 @@ public:
 		dynamic_cast<wxStaticText*>(window)->SetLabel(wxString::FromUTF8(value.data()));
 		m_disable_change_event = false;
 	}
-	void			set_value(const boost::any& value, bool change_event = false) {
+	void			set_value(const boost::any& value, bool change_event = false) override {
 		m_disable_change_event = !change_event;
 		dynamic_cast<wxStaticText*>(window)->SetLabel(boost::any_cast<wxString>(value));
 		m_disable_change_event = false;
@@ -505,7 +477,7 @@ public:
 	void			BUILD()  override;
 
 	void			set_value(const int value, bool change_event = false);
-	void			set_value(const boost::any& value, bool change_event = false);
+	void			set_value(const boost::any& value, bool change_event = false) override;
 	boost::any&		get_value() override;
 
 	void			enable() override {

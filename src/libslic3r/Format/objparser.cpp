@@ -1,6 +1,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <boost/log/trivial.hpp>
 #include <boost/nowide/cstdio.hpp>
 
 #include "objparser.hpp"
@@ -312,7 +313,7 @@ static bool obj_parseline(const char *line, ObjData &data)
 		break;
 	}
 	default:
-		printf("ObjParser: Unknown command: %c\r\n", c1);
+    	BOOST_LOG_TRIVIAL(error) << "ObjParser: Unknown command: " << c1;
 		break;
 	}
 
@@ -338,21 +339,58 @@ bool objparse(const char *path, ObjData &data)
 					char *c = buf + lastLine;
 					while (*c == ' ' || *c == '\t')
 						++ c;
+					//FIXME check the return value and exit on error?
+					// Will it break parsing of some obj files?
 					obj_parseline(c, data);
 					lastLine = i + 1;
 				}
 			lenPrev = len - lastLine;
+			if (lenPrev > 65536) {
+		    	BOOST_LOG_TRIVIAL(error) << "ObjParser: Excessive line length";
+				::fclose(pFile);
+				return false;
+			}
 			memmove(buf, buf + lastLine, lenPrev);
 		}
     }
     catch (std::bad_alloc&) {
-        printf("Out of memory\r\n");
+    	BOOST_LOG_TRIVIAL(error) << "ObjParser: Out of memory";
 	}
 	::fclose(pFile);
 
 	// printf("vertices: %d\r\n", data.vertices.size() / 4);
 	// printf("coords: %d\r\n", data.coordinates.size());
 	return true;
+}
+
+bool objparse(std::istream &stream, ObjData &data)
+{
+    try {
+        char buf[65536 * 2];
+        size_t len = 0;
+        size_t lenPrev = 0;
+        while ((len = size_t(stream.read(buf + lenPrev, 65536).gcount())) != 0) {
+            len += lenPrev;
+            size_t lastLine = 0;
+            for (size_t i = 0; i < len; ++ i)
+                if (buf[i] == '\r' || buf[i] == '\n') {
+                    buf[i] = 0;
+                    char *c = buf + lastLine;
+                    while (*c == ' ' || *c == '\t')
+                        ++ c;
+                    obj_parseline(c, data);
+                    lastLine = i + 1;
+                }
+            lenPrev = len - lastLine;
+            memmove(buf, buf + lastLine, lenPrev);
+        }
+    }
+    catch (std::bad_alloc&) {
+    	BOOST_LOG_TRIVIAL(error) << "ObjParser: Out of memory";
+    	return false;
+    }
+    
+    return true;
 }
 
 template<typename T> 

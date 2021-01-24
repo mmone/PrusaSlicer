@@ -9,8 +9,8 @@ include("deps-unix-common.cmake")
 
 ExternalProject_Add(dep_boost
     EXCLUDE_FROM_ALL 1
-    URL "https://dl.bintray.com/boostorg/release/1.70.0/source/boost_1_70_0.tar.gz"
-    URL_HASH SHA256=882b48708d211a5f48e60b0124cf5863c1534cd544ecd0664bb534a4b5d506e9
+    URL "https://dl.bintray.com/boostorg/release/1.75.0/source/boost_1_75_0.tar.gz"
+    URL_HASH SHA256=aeb26f80e80945e82ee93e5939baebdca47b9dee80a07d3144be1e1a6a66dd6a
     BUILD_IN_SOURCE 1
     CONFIGURE_COMMAND bootstrap.bat
     BUILD_COMMAND b2.exe
@@ -21,6 +21,7 @@ ExternalProject_Add(dep_boost
         --with-log
         --with-locale
         --with-regex
+        --with-date_time
         "--prefix=${DESTDIR}/usr/local"
         "address-model=${DEPS_BITS}"
         "toolset=${DEP_BOOST_TOOLSET}"
@@ -55,22 +56,6 @@ ExternalProject_Add(dep_libcurl
         -DCURL_DISABLE_IMAP=ON
         -DCURL_DISABLE_SMTP=ON
         -DCURL_DISABLE_GOPHER=ON
-        -DCMAKE_INSTALL_PREFIX=${DESTDIR}/usr/local
-        ${DEP_CMAKE_OPTS}
-)
-
-ExternalProject_Add(dep_wxwidgets
-    EXCLUDE_FROM_ALL 1
-    GIT_REPOSITORY "https://github.com/prusa3d/wxWidgets"
-    GIT_TAG v3.1.1-patched
-#    URL "https://github.com/wxWidgets/wxWidgets/releases/download/v3.1.1/wxWidgets-3.1.1.tar.bz2"
-#    URL_HASH SHA256=c925dfe17e8f8b09eb7ea9bfdcfcc13696a3e14e92750effd839f5e10726159e
-#    PATCH_COMMAND "${CMAKE_COMMAND}" -E copy "${CMAKE_CURRENT_SOURCE_DIR}\\wxwidgets-pngprefix.h" src\\png\\pngprefix.h
-    CMAKE_ARGS
-        -DBUILD_SHARED_LIBS=OFF
-        -DwxUSE_LIBPNG=builtin
-        -DwxUSE_ZLIB=builtin
-        -DwxUSE_OPENGL=ON
         -DCMAKE_INSTALL_PREFIX=${DESTDIR}/usr/local
         ${DEP_CMAKE_OPTS}
 )

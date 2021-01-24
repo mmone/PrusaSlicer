@@ -54,15 +54,23 @@ void LayerRegion::make_perimeters(const SurfaceCollection &slices, SurfaceCollec
 {
     this->perimeters.clear();
     this->thin_fills.clear();
-    
+
+    const PrintConfig       &print_config  = this->layer()->object()->print()->config();
+    const PrintRegionConfig &region_config = this->region()->config();
+    // This needs to be in sync with PrintObject::_slice() slicing_mode_normal_below_layer!
+    bool spiral_vase = print_config.spiral_vase &&
+        (this->layer()->id() >= region_config.bottom_solid_layers.value &&
+         this->layer()->print_z >= region_config.bottom_solid_min_thickness - EPSILON);
+
     PerimeterGenerator g(
         // input:
         &slices,
         this->layer()->height,
         this->flow(frPerimeter),
-        &this->region()->config(),
+        &region_config,
         &this->layer()->object()->config(),
-        &this->layer()->object()->print()->config(),
+        &print_config,
+        spiral_vase,
         
         // output:
         &this->perimeters,
@@ -117,7 +125,7 @@ void LayerRegion::process_external_surfaces(const Layer *lower_layer, const Poly
         // Voids are sparse infills if infill rate is zero.
         Polygons voids;
         for (const Surface &surface : this->fill_surfaces.surfaces) {
-            if (surface.surface_type == stTop) {
+            if (surface.is_top()) {
                 // Collect the top surfaces, inflate them and trim them by the bottom surfaces.
                 // This gives the priority to bottom surfaces.
                 surfaces_append(top, offset_ex(surface.expolygon, margin, EXTERNAL_SURFACES_OFFSET_PARAMETERS), surface);
@@ -264,7 +272,7 @@ void LayerRegion::process_external_surfaces(const Layer *lower_layer, const Poly
                     this->flow(frInfill, true).scaled_width()
                 );
                 #ifdef SLIC3R_DEBUG
-                printf("Processing bridge at layer " PRINTF_ZU ":\n", this->layer()->id());
+                printf("Processing bridge at layer %zu:\n", this->layer()->id());
                 #endif
 				double custom_angle = Geometry::deg2rad(this->region()->config().bridge_angle.value);
 				if (bd.detect_angle(custom_angle)) {
@@ -313,7 +321,7 @@ void LayerRegion::process_external_surfaces(const Layer *lower_layer, const Poly
                     s2.clear();
                 }
             }
-            if (s1.surface_type == stTop)
+            if (s1.is_top())
                 // Trim the top surfaces by the bottom surfaces. This gives the priority to the bottom surfaces.
                 polys = diff(polys, bottom_polygons);
             surfaces_append(
@@ -362,8 +370,10 @@ void LayerRegion::prepare_fill_surfaces()
         alter fill_surfaces boundaries on which our idempotency relies since that's
         the only meaningful information returned by psPerimeters. */
     
+    bool spiral_vase = this->layer()->object()->print()->config().spiral_vase;
+
     // if no solid layers are requested, turn top/bottom surfaces to internal
-    if (this->region()->config().top_solid_layers == 0) {
+    if (! spiral_vase && this->region()->config().top_solid_layers == 0) {
         for (Surface &surface : this->fill_surfaces.surfaces)
             if (surface.is_top())
                 surface.surface_type = this->layer()->object()->config().infill_only_where_needed ? stInternalVoid : stInternal;
@@ -375,7 +385,7 @@ void LayerRegion::prepare_fill_surfaces()
     }
 
     // turn too small internal regions into solid regions according to the user setting
-    if (this->region()->config().fill_density.value > 0) {
+    if (! spiral_vase && this->region()->config().fill_density.value > 0) {
         // scaling an area requires two calls!
         double min_area = scale_(scale_(this->region()->config().solid_infill_below_area.value));
         for (Surface &surface : this->fill_surfaces.surfaces)
